@@ -28,18 +28,19 @@ void stopEncodeFeed(JNIEnv *env, jobject* vorbisDataFeed, jmethodID* stopMethodI
 
 //Reads pcm data from the jni callback
 long readPCMDataFromEncoderDataFeed(JNIEnv *env, jobject* encoderDataFeed, jmethodID* readPCMDataMethodId, char* buffer, int length, jbyteArray* jByteArrayBuffer) {
-    long readByteCount = (*env)->CallLongMethod(env, (*encoderDataFeed), (*readPCMDataMethodId), (*jByteArrayBuffer), length);
+	__android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "before the readpcmdatacall");
+	long readByteCount = (*env)->CallLongMethod(env, (*encoderDataFeed), (*readPCMDataMethodId), (*jByteArrayBuffer), length);
 
     //Don't bother copying, just delete the reference and return 0
+    __android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "before delete encode ref");
     if(readByteCount == 0) {
         (*env)->DeleteLocalRef(env, (*jByteArrayBuffer));
         return 0;
     }
-
+    __android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "before copy of elements");
     //Gets the bytes from the java array and copies them to the pcm buffer
     jbyte* readBytes = (*env)->GetByteArrayElements(env, (*jByteArrayBuffer), NULL);
     memcpy(buffer, readBytes, readByteCount);
-
     //Clean up memory and return how much data was read
     (*env)->ReleaseByteArrayElements(env, (*jByteArrayBuffer), readBytes, JNI_ABORT);
 
@@ -56,11 +57,15 @@ int writeVorbisDataToEncoderDataFeed(JNIEnv *env, jobject* encoderDataFeed, jmet
 
     //Create and copy the contents of what we're writing to the java byte array
     jbyteArray jByteArray = (*env)->NewByteArray(env, bytes);
-    (*env)->SetByteArrayRegion(env, (*jByteArrayWriteBuffer), 0, bytes, (jbyte *)buffer);
+   // (*env)->SetByteArrayRegion(env, (*jByteArrayWriteBuffer), 0, bytes, (jbyte *)buffer);
+    (*env)->SetByteArrayRegion(env,jByteArray , 0, bytes, (jbyte *)buffer);
 
     //Call the write vorbis data method
-    int amountWritten = (*env)->CallIntMethod(env, (*encoderDataFeed), (*writeVorbisDataMethodId), (*jByteArrayWriteBuffer), bytes);
+   // int amountWritten = (*env)->CallIntMethod(env, (*encoderDataFeed), (*writeVorbisDataMethodId), (*jByteArrayWriteBuffer), bytes);
+    int amountWritten = (*env)->CallIntMethod(env, (*encoderDataFeed), (*writeVorbisDataMethodId), jByteArray, bytes);
 
+    __android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "before deleting the local reference");
+    (*env)->DeleteLocalRef(env,jByteArray);
     //Return the amount that was actually written
     return amountWritten;
 }
@@ -74,6 +79,7 @@ int startEncoding(JNIEnv *env, jclass *cls_ptr, jlong *sampleRate_ptr, jlong *ch
     jfloat quality = (*quality_ptr);
     jlong bitrate = (*bitrate_ptr);
     jobject encoderDataFeed = (*encoderDataFeed_ptr);
+
 
     //Create our PCM data buffer
     signed char readbuffer[READ*4+44];
@@ -107,6 +113,7 @@ int startEncoding(JNIEnv *env, jclass *cls_ptr, jlong *sampleRate_ptr, jlong *ch
 
     int eos=0,ret;
     int i, founddata;
+    int eoffile = 0;
 
     /********** Encode setup ************/
     __android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "Setting up encoding");
@@ -218,17 +225,20 @@ int startEncoding(JNIEnv *env, jclass *cls_ptr, jlong *sampleRate_ptr, jlong *ch
     while(!eos){
       long i;
       long bytes = readPCMDataFromEncoderDataFeed(env, &encoderDataFeed, &readPCMDataMethodId, readbuffer, READ*4, &jByteArrayBuffer);
-
+      __android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "Read data from pcm encoded feed with %lld Bytes", bytes);
       if(bytes==0){
         /* end of file.  this can be done implicitly in the mainline,
            but it's easier to see here in non-clever fashion.
            Tell the library we're at end of stream so that it can handle
            the last frame and mark end of stream in the output properly */
+    	  eoffile = 1;
         __android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "End of file");
         vorbis_analysis_wrote(&vd,0);
 
       }else{
         /* data to encode */
+
+    	  __android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "in data to encode");
 
         /* expose the buffer to submit data */
         float **buffer=vorbis_analysis_buffer(&vd,READ);
@@ -249,24 +259,29 @@ int startEncoding(JNIEnv *env, jclass *cls_ptr, jlong *sampleRate_ptr, jlong *ch
       /* vorbis does some data preanalysis, then divvies up blocks for
          more involved (potentially parallel) processing.  Get a single
          block for encoding now */
+      __android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "before the preanalysis");
       while(vorbis_analysis_blockout(&vd,&vb)==1){
 
         /* analysis, assume we want to use bitrate management */
         vorbis_analysis(&vb,NULL);
         vorbis_bitrate_addblock(&vb);
-
+        __android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "in the while loop blockout");
         while(vorbis_bitrate_flushpacket(&vd,&op)){
 
           /* weld the packet into the bitstream */
           ogg_stream_packetin(&os,&op);
-
+          __android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "weld the packet");
           /* write out pages (if any) */
           while(!eos){
             int result=ogg_stream_pageout(&os,&og);
+            __android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "the result value is %i",result);
             if(result==0)break;
-            writeVorbisDataToEncoderDataFeed(env, &encoderDataFeed, &writeVorbisDataMethodId, og.header, og.header_len, &jByteArrayWriteBuffer);
-            writeVorbisDataToEncoderDataFeed(env, &encoderDataFeed, &writeVorbisDataMethodId, og.body, og.body_len, &jByteArrayWriteBuffer);
 
+            __android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "before writing to encoded datafeed header");
+            writeVorbisDataToEncoderDataFeed(env, &encoderDataFeed, &writeVorbisDataMethodId, og.header, og.header_len, &jByteArrayWriteBuffer);
+            __android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "before writing to encoded datafeed body");
+            writeVorbisDataToEncoderDataFeed(env, &encoderDataFeed, &writeVorbisDataMethodId, og.body, og.body_len, &jByteArrayWriteBuffer);
+            __android_log_print(ANDROID_LOG_INFO, "VorbisEncoder", "writing to encoded datafeed");
             /* this could be set above, but for illustrative purposes, I do
                it here (to show that vorbis does know where the stream ends) */
 
